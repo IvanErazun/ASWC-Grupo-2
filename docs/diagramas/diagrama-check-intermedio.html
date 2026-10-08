@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Levantar Vuelo — Arquitectura Elixir/OTP (check intermedio)</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #020617;
+      min-height: 100vh;
+      padding: 2rem;
+      color: white;
+    }
+    .container { max-width: 2280px; margin: 0 auto; }
+    .header { margin-bottom: 1.5rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #22d3ee; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-left: 1.75rem; }
+    .hint { color: #475569; font-size: 0.75rem; margin-left: 1.75rem; margin-top: 0.25rem; }
+    .pending-banner {
+      background: rgba(120, 53, 15, 0.25);
+      border: 1px dashed #fbbf24;
+      border-radius: 0.75rem;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      font-size: 0.8rem;
+      line-height: 1.6;
+      color: #fde68a;
+    }
+    .pending-banner b { color: white; }
+    .pending-banner .plabel { color: #fbbf24; font-weight: 700; }
+    .diagram-container {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 1rem;
+      border: 1px solid #1e293b;
+      padding: 1rem;
+      overflow: auto;
+    }
+    svg { display: block; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; margin-top: 2rem; }
+    .card { background: rgba(15, 23, 42, 0.5); border-radius: 0.75rem; border: 1px solid #1e293b; padding: 1.25rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card-dot.amber { background: #fbbf24; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; line-height: 1.5; }
+    .card li { margin-bottom: 0.375rem; }
+    .footer { text-align: center; margin-top: 1.5rem; color: #475569; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>Levantar Vuelo — Arquitectura Elixir/OTP (check intermedio)</h1>
+      </div>
+      <p class="subtitle">TP Grupal IASC 2C2026 · actor por vuelo + replicación con quorum y épocas · todo lo visto en clase se usa con nombre y apellido; lo que falta ver queda marcado</p>
+      <p class="hint">4 paneles con zoom: cada flujo es autónomo; las entidades se repiten entre paneles (†) para evitar cruces de flechas.</p>
+    </div>
+
+    <div class="pending-banner">
+      <b>Lo que el diseño necesita y todavía no vimos en clase <span class="plabel">[P]</span>.</b>
+      Con lo visto hasta hoy (actores, GenServer, supervisors, DynamicSupervisor) resolvemos todo dentro de un nodo.
+      Para el cluster hacen falta tres mecanismos que un supervisor local no da:
+      <b>1)</b> arrancar el actor de un vuelo en el nodo que convenga del cluster,
+      <b>2)</b> un registro global <b>{:flight, id} → PID</b> para llamarlo desde cualquier nodo sin saber dónde vive,
+      <b>3)</b> detectar la caída de un nodo y revivir sus vuelos en otro.
+      Los marcamos <span class="plabel">[P]</span> en el diagrama: son la pieza que esperamos resolver con la próxima unidad de la materia.
+      Importante: la garantía de no vender dos veces <b>no</b> depende de esta pieza — la dan quorum + épocas, que sí es diseño propio.
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 2190 1690" width="2190">
+        <defs>
+          <marker id="arrowcyan" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee" />
+          </marker>
+          <marker id="arrowviolet" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#a78bfa" />
+          </marker>
+          <marker id="arrowemerald" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#34d399" />
+          </marker>
+          <marker id="arrowamber" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24" />
+          </marker>
+          <marker id="arrowrose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb7185" />
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <!-- ============================================================ -->
+        <!-- PANEL 1 (x=20, y=90): PUBLICAR VUELO + ALERTAS (F1-F3)       -->
+        <!-- ============================================================ -->
+        <g>
+          <rect x="20" y="90" width="1060" height="760" rx="12" fill="rgba(15, 23, 42, 0.35)" stroke="#1e293b" stroke-width="1.5"/>
+          <text x="50" y="130" fill="white" font-size="16" font-weight="700">① Publicar un vuelo y notificar alertas (F1–F3)</text>
+          <text x="50" y="150" fill="#475569" font-size="10">entra por cualquier nodo · el fan-out no toca al FlightServer</text>
+
+          <!-- Aerolínea -->
+          <rect x="80" y="190" width="220" height="64" rx="6" fill="rgba(30, 41, 59, 0.6)" stroke="#94a3b8" stroke-width="1.5"/>
+          <text x="190" y="216" fill="white" font-size="12" font-weight="600" text-anchor="middle">Aerolínea</text>
+          <text x="190" y="234" fill="#94a3b8" font-size="9" text-anchor="middle">POST /flights</text>
+
+          <!-- API -->
+          <rect x="80" y="310" width="220" height="64" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+          <text x="190" y="336" fill="white" font-size="12" font-weight="600" text-anchor="middle">API REST †</text>
+          <text x="190" y="354" fill="#94a3b8" font-size="9" text-anchor="middle">Phoenix sin Ecto · nodo X</text>
+
+          <!-- Supervisor distribuido [P] -->
+          <rect x="60" y="424" width="360" height="82" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6,4"/>
+          <text x="240" y="450" fill="#fbbf24" font-size="11" font-weight="600" text-anchor="middle">Supervisor de vuelos [P]</text>
+          <text x="240" y="470" fill="#94a3b8" font-size="9" text-anchor="middle">como DynamicSupervisor,</text>
+          <text x="240" y="486" fill="#94a3b8" font-size="9" text-anchor="middle">pero arranca el vuelo en el nodo que convenga</text>
+
+          <!-- FlightServer nuevo -->
+          <rect x="80" y="550" width="220" height="80" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="190" y="574" fill="white" font-size="12" font-weight="600" text-anchor="middle">FlightServer (nuevo)</text>
+          <text x="190" y="592" fill="#94a3b8" font-size="9" text-anchor="middle">init: replica estado inicial</text>
+          <text x="190" y="606" fill="#94a3b8" font-size="9" text-anchor="middle">programa cierre (instante absoluto)</text>
+
+          <!-- AlertIndex -->
+          <rect x="620" y="310" width="280" height="74" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="760" y="334" fill="white" font-size="12" font-weight="600" text-anchor="middle">AlertIndex †</text>
+          <text x="760" y="352" fill="#94a3b8" font-size="9" text-anchor="middle">DeltaCrdt (AWLWWMap) + ETS</text>
+          <text x="760" y="366" fill="#94a3b8" font-size="9" text-anchor="middle">matchea (origen, destino, fecha/mes)</text>
+
+          <!-- Notifier -->
+          <rect x="620" y="450" width="280" height="64" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+          <text x="760" y="474" fill="white" font-size="12" font-weight="600" text-anchor="middle">Notifier †</text>
+          <text x="760" y="492" fill="#94a3b8" font-size="9" text-anchor="middle">Task.Supervisor + Phoenix.PubSub</text>
+
+          <!-- Usuario -->
+          <rect x="620" y="570" width="280" height="70" rx="6" fill="rgba(30, 41, 59, 0.6)" stroke="#94a3b8" stroke-width="1.5"/>
+          <text x="760" y="596" fill="white" font-size="12" font-weight="600" text-anchor="middle">Usuarios con alerta coincidente</text>
+          <text x="760" y="614" fill="#94a3b8" font-size="9" text-anchor="middle">reciben push SSE / WS (best-effort, AP)</text>
+
+          <!-- flechas: cadena izquierda -->
+          <line x1="190" y1="254" x2="190" y2="306" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowcyan)"/>
+          <line x1="190" y1="374" x2="190" y2="426" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrowamber)"/>
+          <text x="200" y="404" fill="#94a3b8" font-size="9">start_child (en el nodo elegido)</text>
+          <line x1="190" y1="494" x2="190" y2="546" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+
+          <!-- API -> AlertIndex -->
+          <line x1="300" y1="342" x2="616" y2="342" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+          <text x="458" y="332" fill="#94a3b8" font-size="9" text-anchor="middle">match de alertas</text>
+
+          <!-- AlertIndex -> Notifier -->
+          <line x1="760" y1="384" x2="760" y2="446" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+          <text x="770" y="420" fill="#94a3b8" font-size="9">user_ids en lotes</text>
+
+          <!-- Notifier -> Usuario -->
+          <line x1="760" y1="514" x2="760" y2="566" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrowemerald)"/>
+          <text x="770" y="545" fill="#34d399" font-size="9">push</text>
+
+          <!-- 201 de vuelta -->
+          <path d="M 300 222 L 330 222 L 330 170 L 192 170 L 192 186" fill="none" stroke="#22d3ee" stroke-width="1.2" stroke-dasharray="4,4" marker-end="url(#arrowcyan)"/>
+          <text x="262" y="162" fill="#22d3ee" font-size="9">201 {flight_id}</text>
+
+          <!-- nota del panel -->
+          <text x="80" y="680" fill="#475569" font-size="9">• El fan-out va por Task.Supervisor: nunca bloquea al FlightServer.</text>
+          <text x="80" y="698" fill="#475569" font-size="9">• La alerta se creó antes por POST /alerts y ya vive replicada en el CRDT de todos los nodos.</text>
+          <text x="80" y="716" fill="#475569" font-size="9">• Usuario desconectado: notificación best-effort (inbox CRDT opcional).</text>
+        </g>
+
+        <!-- ============================================================ -->
+        <!-- PANEL 2 (x=1110, y=90): RESERVAR + ELEGIR ASIENTOS (F4-F5,F7)-->
+        <!-- ============================================================ -->
+        <g>
+          <rect x="1110" y="90" width="1060" height="760" rx="12" fill="rgba(15, 23, 42, 0.35)" stroke="#1e293b" stroke-width="1.5"/>
+          <text x="1140" y="130" fill="white" font-size="16" font-weight="700">② Reservar y elegir asientos con quorum (F4–F5, F7)</text>
+          <text x="1140" y="150" fill="#475569" font-size="10">la compra se confirma sólo cuando la mayoría tiene el estado · idempotencia por request_id</text>
+
+          <!-- Usuario -->
+          <rect x="1170" y="190" width="240" height="70" rx="6" fill="rgba(30, 41, 59, 0.6)" stroke="#94a3b8" stroke-width="1.5"/>
+          <text x="1290" y="216" fill="white" font-size="12" font-weight="600" text-anchor="middle">Usuario †</text>
+          <text x="1290" y="234" fill="#94a3b8" font-size="9" text-anchor="middle">2 ventanas + 1 pasillo</text>
+
+          <!-- API -->
+          <rect x="1170" y="310" width="240" height="64" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+          <text x="1290" y="336" fill="white" font-size="12" font-weight="600" text-anchor="middle">API REST † (nodo cualquiera)</text>
+          <text x="1290" y="354" fill="#94a3b8" font-size="9" text-anchor="middle">request_id en cada escritura</text>
+
+          <!-- Registro global [P] -->
+          <rect x="1170" y="430" width="240" height="64" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6,4"/>
+          <text x="1290" y="452" fill="#fbbf24" font-size="11" font-weight="600" text-anchor="middle">Registro global de vuelos [P]</text>
+          <text x="1290" y="470" fill="#94a3b8" font-size="9" text-anchor="middle">{:flight, id} → PID, visible en todo el cluster</text>
+
+          <!-- FlightServer primario -->
+          <rect x="1170" y="550" width="320" height="130" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="1330" y="576" fill="white" font-size="13" font-weight="700" text-anchor="middle">FlightServer (primario) †</text>
+          <text x="1330" y="596" fill="#94a3b8" font-size="9" text-anchor="middle">1. Flight.assign_seats/3 — todo-o-nada</text>
+          <text x="1330" y="612" fill="#94a3b8" font-size="9" text-anchor="middle">2. put{estado, época, versión} a réplicas</text>
+          <text x="1330" y="628" fill="#94a3b8" font-size="9" text-anchor="middle">3. mayoría → confirma (200)</text>
+          <text x="1330" y="644" fill="#34d399" font-size="9" text-anchor="middle">sin mayoría → crash → recover (let it crash)</text>
+          <text x="1330" y="662" fill="#94a3b8" font-size="9" text-anchor="middle">mailbox serializa: gana el primero que llega</text>
+
+          <!-- Replicas -->
+          <rect x="1650" y="470" width="260" height="74" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="1780" y="494" fill="white" font-size="12" font-weight="600" text-anchor="middle">ReplicaStore — Nodo B</text>
+          <text x="1780" y="512" fill="#94a3b8" font-size="9" text-anchor="middle">GenServer + ETS · hash ring</text>
+          <text x="1780" y="526" fill="#94a3b8" font-size="9" text-anchor="middle">{estado, época, versión}</text>
+
+          <rect x="1650" y="600" width="260" height="74" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="1780" y="624" fill="white" font-size="12" font-weight="600" text-anchor="middle">ReplicaStore — Nodo C</text>
+          <text x="1780" y="642" fill="#94a3b8" font-size="9" text-anchor="middle">GenServer + ETS · hash ring</text>
+          <text x="1780" y="656" fill="#94a3b8" font-size="9" text-anchor="middle">{estado, época, versión}</text>
+
+          <!-- flechas -->
+          <line x1="1290" y1="260" x2="1290" y2="306" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowcyan)"/>
+          <text x="1300" y="288" fill="#94a3b8" font-size="9">POST .../seats (reserva: POST .../reservations, overbooking ok)</text>
+          <line x1="1290" y1="374" x2="1290" y2="426" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowcyan)"/>
+          <text x="1300" y="404" fill="#94a3b8" font-size="9">GenServer.call vía registro global [P]</text>
+          <line x1="1290" y1="494" x2="1290" y2="546" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowviolet)"/>
+          <text x="1300" y="525" fill="#94a3b8" font-size="9">PID remoto transparente</text>
+
+          <!-- Flight -> replicas -->
+          <line x1="1490" y1="590" x2="1646" y2="510" stroke="#a78bfa" stroke-width="2" marker-end="url(#arrowviolet)"/>
+          <line x1="1490" y1="640" x2="1646" y2="636" stroke="#a78bfa" stroke-width="2" marker-end="url(#arrowviolet)"/>
+          <text x="1560" y="560" fill="#a78bfa" font-size="9" font-weight="600">multi_call put</text>
+          <!-- acks -->
+          <line x1="1646" y1="530" x2="1496" y2="606" stroke="#a78bfa" stroke-width="1.2" stroke-dasharray="4,4" marker-end="url(#arrowviolet)"/>
+          <text x="1560" y="690" fill="#a78bfa" font-size="9">quorum = primario + 1 ack</text>
+
+          <!-- retorno al usuario -->
+          <path d="M 1170 615 L 1128 615 L 1128 225 L 1166 225" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+          <text x="1136" y="420" fill="#34d399" font-size="10" transform="rotate(-90 1136 420)" text-anchor="middle">200 compra confirmada (GenServer.reply en 2 pasos)</text>
+          <!-- 409 -->
+          <path d="M 1490 660 L 1990 660 L 1990 260 L 1414 260" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="5,5" marker-end="url(#arrowrose)"/>
+          <text x="1930" y="460" fill="#fb7185" font-size="9" transform="rotate(-90 1930 460)" text-anchor="middle">409 sin disponibilidad → elegir de nuevo</text>
+
+          <!-- nota del panel -->
+          <text x="1170" y="716" fill="#475569" font-size="9">• "Cualquiera" arranca por middle: quedan ventanas/pasillos para pedidos específicos.</text>
+          <text x="1170" y="734" fill="#475569" font-size="9">• Cancelación del thread de reserva: reintegra disponibilidad y pide TODOS los asientos de nuevo (salvo vuelo cerrado).</text>
+        </g>
+
+        <!-- ============================================================ -->
+        <!-- PANEL 3 (x=20, y=880): CAÍDA DE NODO Y FAILOVER (F6, redundancia) -->
+        <!-- ============================================================ -->
+        <g>
+          <rect x="20" y="880" width="1060" height="780" rx="12" fill="rgba(15, 23, 42, 0.35)" stroke="#1e293b" stroke-width="1.5"/>
+          <text x="50" y="920" fill="white" font-size="16" font-weight="700">③ Se cae un nodo: failover (F6 + redundancia)</text>
+          <text x="50" y="940" fill="#475569" font-size="10">ninguna compra confirmada se pierde: toda confirmación vivía en ≥ 2 nodos</text>
+
+          <!-- Nodo A caído -->
+          <rect x="80" y="980" width="300" height="110" rx="8" fill="rgba(136, 19, 55, 0.15)" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="6,4"/>
+          <text x="230" y="1006" fill="#fb7185" font-size="13" font-weight="700" text-anchor="middle">✕ Nodo A (primario del vuelo 17)</text>
+          <text x="230" y="1026" fill="#94a3b8" font-size="9" text-anchor="middle">crash-stop · :nodedown detectado</text>
+          <text x="230" y="1042" fill="#94a3b8" font-size="9" text-anchor="middle">net_ticktime 10s (vm.args)</text>
+          <text x="230" y="1058" fill="#94a3b8" font-size="9" text-anchor="middle">timer de oferta: instante absoluto, no se pierde</text>
+
+          <!-- Failover [P] -->
+          <rect x="80" y="1150" width="300" height="74" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6,4"/>
+          <text x="230" y="1174" fill="#fbbf24" font-size="12" font-weight="600" text-anchor="middle">Failover [P] (corre en nodos B y C)</text>
+          <text x="230" y="1192" fill="#94a3b8" font-size="9" text-anchor="middle">rol de supervisor, pero distribuido:</text>
+          <text x="230" y="1206" fill="#94a3b8" font-size="9" text-anchor="middle">detecta la caída y revive el vuelo en un nodo sano</text>
+
+          <!-- réplicas laterales -->
+          <rect x="620" y="980" width="280" height="74" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="760" y="1004" fill="white" font-size="12" font-weight="600" text-anchor="middle">ReplicaStore — Nodo B</text>
+          <text x="760" y="1022" fill="#94a3b8" font-size="9" text-anchor="middle">get(17) → época 3, versión 120</text>
+
+          <rect x="620" y="1090" width="280" height="74" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="760" y="1114" fill="white" font-size="12" font-weight="600" text-anchor="middle">ReplicaStore — Nodo C</text>
+          <text x="760" y="1132" fill="#94a3b8" font-size="9" text-anchor="middle">get(17) → época 3, versión 119</text>
+
+          <!-- nuevo FlightServer en B -->
+          <rect x="80" y="1290" width="500" height="150" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="330" y="1316" fill="white" font-size="13" font-weight="700" text-anchor="middle">FlightServer' del vuelo 17 — renace en Nodo B</text>
+          <text x="330" y="1338" fill="#94a3b8" font-size="9" text-anchor="middle">init: se queda con la versión más alta (120) · época 3 → 4</text>
+          <text x="330" y="1354" fill="#94a3b8" font-size="9" text-anchor="middle">registra la época 4 en la mayoría ANTES de atender pedidos</text>
+          <text x="330" y="1370" fill="#94a3b8" font-size="9" text-anchor="middle">reprograma el cierre desde offer_ends_at (ya vencido → cierra ya)</text>
+          <text x="330" y="1390" fill="#34d399" font-size="9" text-anchor="middle">vuelve a atender · re-replica cuando haya nodo disponible</text>
+          <text x="330" y="1410" fill="#94a3b8" font-size="9" text-anchor="middle">fencing: réplicas rechazan épocas menores → primario zombie no junta mayoría</text>
+
+          <!-- flechas -->
+          <line x1="230" y1="1090" x2="230" y2="1146" stroke="#fb7185" stroke-width="1.5" marker-end="url(#arrowrose)"/>
+          <line x1="230" y1="1224" x2="230" y2="1286" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrowamber)"/>
+          <text x="240" y="1262" fill="#94a3b8" font-size="9">revive</text>
+          <!-- replicas -> nuevo FlightServer -->
+          <line x1="620" y1="1017" x2="584" y2="1300" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrowviolet)"/>
+          <line x1="620" y1="1127" x2="584" y2="1330" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrowviolet)"/>
+          <text x="618" y="1240" fill="#a78bfa" font-size="9">get: estado desde</text>
+          <text x="618" y="1254" fill="#a78bfa" font-size="9">las réplicas</text>
+
+          <!-- nodo nuevo -->
+          <rect x="620" y="1290" width="280" height="64" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+          <text x="760" y="1314" fill="white" font-size="12" font-weight="600" text-anchor="middle">Nodo nuevo / que vuelve</text>
+          <text x="760" y="1332" fill="#94a3b8" font-size="9" text-anchor="middle">arranca vacío · se conecta al cluster</text>
+          <text x="760" y="1346" fill="#94a3b8" font-size="9" text-anchor="middle">recibe réplicas al recalcular el hash ring</text>
+
+          <!-- nota -->
+          <text x="80" y="1470" fill="#475569" font-size="9">• Sesiones del nodo caído: solo se rompe la conexión → reconnect a otro nodo.</text>
+          <text x="80" y="1488" fill="#475569" font-size="9">• Compras ya confirmadas: siguen existiendo (estaban en ≥ 2 nodos). Reservas pendientes: se recuperan igual.</text>
+          <text x="80" y="1506" fill="#475569" font-size="9">• Cliente que no supo si su compra se hizo: reintenta con el MISMO request_id → respuesta idempotente.</text>
+          <text x="80" y="1524" fill="#475569" font-size="9">• Quitar un nodo a propósito: de a uno, sólo cuando no haya vuelos con réplicas faltantes.</text>
+        </g>
+
+        <!-- ============================================================ -->
+        <!-- PANEL 4 (x=1110, y=880): TOPOLOGÍA, ESCALA Y MONITOREO       -->
+        <!-- ============================================================ -->
+        <g>
+          <rect x="1110" y="880" width="1060" height="780" rx="12" fill="rgba(251, 191, 36, 0.04)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+          <text x="1140" y="920" fill="white" font-size="16" font-weight="700">④ Topología, escalado y monitoreo</text>
+          <text x="1140" y="940" fill="#475569" font-size="10">cluster Erlang distribuido · nodos simétricos, sin master · sin DB: durabilidad por replicación R=3</text>
+
+          <!-- LB -->
+          <rect x="1140" y="975" width="200" height="60" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+          <text x="1240" y="998" fill="white" font-size="11" font-weight="600" text-anchor="middle">Load Balancer</text>
+          <text x="1240" y="1014" fill="#94a3b8" font-size="9" text-anchor="middle">nginx / HAProxy</text>
+
+          <!-- k6 -->
+          <rect x="1140" y="1080" width="200" height="60" rx="6" fill="rgba(30, 41, 59, 0.6)" stroke="#94a3b8" stroke-width="1.5"/>
+          <text x="1240" y="1103" fill="white" font-size="11" font-weight="600" text-anchor="middle">k6 / clientes</text>
+          <text x="1240" y="1119" fill="#94a3b8" font-size="9" text-anchor="middle">5.000 usuarios virtuales</text>
+
+          <!-- Nodo 1 -->
+          <rect x="1400" y="970" width="230" height="330" rx="8" fill="transparent" stroke="#94a3b8" stroke-width="1" stroke-dasharray="5,4"/>
+          <text x="1515" y="992" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="middle">Nodo 1 — BEAM</text>
+          <rect x="1415" y="1005" width="200" height="36" rx="5" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.2"/>
+          <text x="1515" y="1027" fill="white" font-size="9" text-anchor="middle">API REST + SSE/WS †</text>
+          <rect x="1415" y="1050" width="200" height="44" rx="5" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.2"/>
+          <text x="1515" y="1068" fill="white" font-size="9" text-anchor="middle">FlightServer ×N †</text>
+          <text x="1515" y="1082" fill="#94a3b8" font-size="8" text-anchor="middle">primario de algunos vuelos</text>
+          <rect x="1415" y="1103" width="200" height="44" rx="5" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.2"/>
+          <text x="1515" y="1121" fill="white" font-size="9" text-anchor="middle">ReplicaStore †</text>
+          <text x="1515" y="1135" fill="#94a3b8" font-size="8" text-anchor="middle">réplicas de otros nodos</text>
+          <rect x="1415" y="1156" width="200" height="44" rx="5" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.2"/>
+          <text x="1515" y="1174" fill="white" font-size="9" text-anchor="middle">AlertIndex (CRDT) †</text>
+          <text x="1515" y="1188" fill="#94a3b8" font-size="8" text-anchor="middle">alertas, converge en ms</text>
+          <rect x="1415" y="1209" width="200" height="36" rx="5" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="5,4"/>
+          <text x="1515" y="1231" fill="#fbbf24" font-size="9" text-anchor="middle">Registro global [P] †</text>
+          <rect x="1415" y="1252" width="200" height="36" rx="5" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.2"/>
+          <text x="1515" y="1274" fill="white" font-size="9" text-anchor="middle">:telemetry → /metrics †</text>
+
+          <!-- Nodo 2 -->
+          <rect x="1660" y="970" width="230" height="330" rx="8" fill="transparent" stroke="#94a3b8" stroke-width="1" stroke-dasharray="5,4"/>
+          <text x="1775" y="992" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="middle">Nodo 2 — BEAM</text>
+          <rect x="1675" y="1005" width="200" height="36" rx="5" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.2"/>
+          <text x="1775" y="1027" fill="white" font-size="9" text-anchor="middle">API REST + SSE/WS †</text>
+          <rect x="1675" y="1050" width="200" height="44" rx="5" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.2"/>
+          <text x="1775" y="1068" fill="white" font-size="9" text-anchor="middle">FlightServer ×N †</text>
+          <text x="1775" y="1082" fill="#94a3b8" font-size="8" text-anchor="middle">p. ej. vuelo 42</text>
+          <rect x="1675" y="1103" width="200" height="44" rx="5" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.2"/>
+          <text x="1775" y="1121" fill="white" font-size="9" text-anchor="middle">ReplicaStore †</text>
+          <text x="1775" y="1135" fill="#94a3b8" font-size="8" text-anchor="middle">réplica del vuelo 17</text>
+          <rect x="1675" y="1156" width="200" height="44" rx="5" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.2"/>
+          <text x="1775" y="1174" fill="white" font-size="9" text-anchor="middle">AlertIndex (CRDT) †</text>
+          <rect x="1675" y="1209" width="200" height="36" rx="5" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="5,4"/>
+          <text x="1775" y="1231" fill="#fbbf24" font-size="9" text-anchor="middle">Registro global [P] †</text>
+          <rect x="1675" y="1252" width="200" height="36" rx="5" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.2"/>
+          <text x="1775" y="1274" fill="white" font-size="9" text-anchor="middle">:telemetry → /metrics †</text>
+
+          <!-- Nodo 3 -->
+          <rect x="1920" y="970" width="230" height="330" rx="8" fill="transparent" stroke="#94a3b8" stroke-width="1" stroke-dasharray="5,4"/>
+          <text x="2035" y="992" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="middle">Nodo 3 — BEAM</text>
+          <rect x="1935" y="1005" width="200" height="36" rx="5" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.2"/>
+          <text x="2035" y="1027" fill="white" font-size="9" text-anchor="middle">API REST + SSE/WS †</text>
+          <rect x="1935" y="1050" width="200" height="44" rx="5" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.2"/>
+          <text x="2035" y="1068" fill="white" font-size="9" text-anchor="middle">ReplicaStore †</text>
+          <text x="2035" y="1082" fill="#94a3b8" font-size="8" text-anchor="middle">2ª réplica del vuelo 17</text>
+          <rect x="1935" y="1103" width="200" height="44" rx="5" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.2"/>
+          <text x="2035" y="1121" fill="white" font-size="9" text-anchor="middle">AlertIndex (CRDT) †</text>
+          <rect x="1935" y="1156" width="200" height="44" rx="5" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.2"/>
+          <text x="2035" y="1174" fill="white" font-size="9" text-anchor="middle">Registro global [P] †</text>
+          <rect x="1935" y="1209" width="200" height="44" rx="5" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.2"/>
+          <text x="2035" y="1227" fill="white" font-size="9" text-anchor="middle">Inbox (opcional, CRDT)</text>
+          <text x="2035" y="1241" fill="#94a3b8" font-size="8" text-anchor="middle">notif. usuarios offline</text>
+          <rect x="1935" y="1252" width="200" height="36" rx="5" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.2"/>
+          <text x="2035" y="1274" fill="white" font-size="9" text-anchor="middle">:telemetry → /metrics †</text>
+
+          <!-- malla entre nodos -->
+          <line x1="1632" y1="1035" x2="1656" y2="1035" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arrowcyan)"/>
+          <line x1="1656" y1="1055" x2="1632" y2="1055" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arrowcyan)"/>
+          <line x1="1892" y1="1035" x2="1916" y2="1035" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arrowcyan)"/>
+          <line x1="1916" y1="1055" x2="1892" y2="1055" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arrowcyan)"/>
+          <line x1="1515" y1="1178" x2="1775" y2="1178" stroke="#34d399" stroke-width="1" stroke-dasharray="3,4"/>
+          <line x1="1775" y1="1178" x2="2035" y2="1178" stroke="#34d399" stroke-width="1" stroke-dasharray="3,4"/>
+          <text x="1775" y="1198" fill="#34d399" font-size="8" text-anchor="middle">deltas CRDT de alertas (AP)</text>
+          <text x="1775" y="1330" fill="#94a3b8" font-size="9" text-anchor="middle">full mesh: mensaje a PID remoto = mismo send que local</text>
+
+          <!-- flechas LB/k6: abanico separado, cada una a la API de su nodo -->
+          <line x1="1330" y1="1000" x2="1410" y2="1018" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowcyan)"/>
+          <text x="1348" y="988" fill="#22d3ee" font-size="8">a Nodo 1</text>
+          <line x1="1340" y1="1020" x2="1670" y2="1005" stroke="#22d3ee" stroke-width="1.2" marker-end="url(#arrowcyan)"/>
+          <text x="1500" y="998" fill="#22d3ee" font-size="8">a Nodo 2</text>
+          <line x1="1340" y1="1030" x2="1930" y2="1000" stroke="#22d3ee" stroke-width="1" marker-end="url(#arrowcyan)"/>
+          <text x="1700" y="988" fill="#22d3ee" font-size="8">a Nodo 3</text>
+          <line x1="1340" y1="1105" x2="1396" y2="1105" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowcyan)"/>
+          <text x="1352" y="1096" fill="#94a3b8" font-size="8">k6</text>
+
+          <!-- monitoreo -->
+          <rect x="1400" y="1400" width="420" height="80" rx="8" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+          <text x="1610" y="1428" fill="white" font-size="12" font-weight="600" text-anchor="middle">Prometheus + Grafana (+ LiveDashboard)</text>
+          <text x="1610" y="1448" fill="#94a3b8" font-size="9" text-anchor="middle">p95/p99 por endpoint · mailbox máx (contención) · vuelos con &lt; R réplicas</text>
+          <text x="1610" y="1464" fill="#94a3b8" font-size="9" text-anchor="middle">requests/s · nodos del cluster · memoria y run queue</text>
+          <line x1="1515" y1="1290" x2="1540" y2="1396" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="5,5" marker-end="url(#arrowamber)"/>
+          <line x1="1775" y1="1290" x2="1640" y2="1396" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="5,5" marker-end="url(#arrowamber)"/>
+          <line x1="2035" y1="1290" x2="1700" y2="1396" stroke="#fbbf24" stroke-width="1" marker-end="url(#arrowamber)"/>
+          <text x="1560" y="1360" fill="#fbbf24" font-size="9">scrape /metrics</text>
+
+          <!-- escalar -->
+          <rect x="1880" y="1400" width="270" height="80" rx="8" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+          <text x="2015" y="1428" fill="white" font-size="12" font-weight="600" text-anchor="middle">Escalar</text>
+          <text x="2015" y="1448" fill="#94a3b8" font-size="9" text-anchor="middle">--scale app=N+1 · el nodo se conecta</text>
+          <text x="2015" y="1464" fill="#94a3b8" font-size="9" text-anchor="middle">rebalanceo [P] · recupera desde réplicas</text>
+          <line x1="2015" y1="1396" x2="2015" y2="1304" stroke="#22d3ee" stroke-width="1.2" stroke-dasharray="5,5" marker-end="url(#arrowcyan)"/>
+
+          <!-- CAP box -->
+          <rect x="1140" y="1520" width="1000" height="110" rx="8" fill="rgba(15, 23, 42, 0.7)" stroke="#1e293b" stroke-width="1"/>
+          <text x="1165" y="1548" fill="white" font-size="12" font-weight="600">CAP por tipo de dato</text>
+          <text x="1165" y="1570" fill="#a78bfa" font-size="9">asientos / compras / reservas: CP — sin mayoría no se confirma (503) · fencing por épocas contra primarios zombies</text>
+          <text x="1165" y="1588" fill="#34d399" font-size="9">alertas: AP (CRDT converge) · notificaciones: AP best-effort · ubicación de procesos [P]: AP con resolución de conflictos (épocas)</text>
+          <text x="1165" y="1610" fill="#475569" font-size="9">Defensa: un solo nodo BEAM ya da toda la concurrencia necesaria; los nodos extra compran supervivencia y capacidad, no paralelismo.</text>
+
+          <!-- leyenda -->
+          <rect x="1140" y="1650" width="16" height="10" rx="2" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1"/>
+          <text x="1162" y="1659" fill="#94a3b8" font-size="9">API / cliente</text>
+          <rect x="1270" y="1650" width="16" height="10" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1"/>
+          <text x="1292" y="1659" fill="#94a3b8" font-size="9">actor de dominio</text>
+          <rect x="1420" y="1650" width="16" height="10" rx="2" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1"/>
+          <text x="1442" y="1659" fill="#94a3b8" font-size="9">estado replicado</text>
+          <rect x="1580" y="1650" width="16" height="10" rx="2" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="4,3"/>
+          <text x="1602" y="1659" fill="#94a3b8" font-size="9">[P] por definir (dependencia de la materia)</text>
+          <rect x="1850" y="1650" width="16" height="10" rx="2" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1"/>
+          <text x="1872" y="1659" fill="#94a3b8" font-size="9">fallo</text>
+          <text x="1960" y="1659" fill="#475569" font-size="9">† = entidad repetida entre paneles</text>
+        </g>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot emerald"></div>
+          <h3>Modelo de concurrencia: un actor por vuelo</h3>
+        </div>
+        <ul>
+          <li>• Cada vuelo es un GenServer: el mailbox procesa las operaciones de a una, así que el mapa de asientos nunca sufre race conditions y no hace falta ningún lock.</li>
+          <li>• El overbooking es estado, no un caso especial: se aceptan más reservas que asientos (quedan pendientes) y la compra recién se concreta al elegir asientos: si hay disponibilidad para todos, se asignan, se replica el estado y con la mayoría de nodos confirmada la reserva pasa a confirmada.</li>
+          <li>• Selección de asientos todo-o-nada: el thread de reserva no se acepta ni cancela hasta resolver todos sus asientos. Si se cancela, se reintegra la disponibilidad y se piden todos de nuevo (salvo vuelo cerrado).</li>
+          <li>• "Cualquiera" se asigna empezando por los middle, para dejar ventanas y pasillos a quienes los piden explícitamente.</li>
+          <li>• La lógica pura (Flight.assign_seats/3) está separada del proceso: se testea sin procesos ni cluster.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot violet"></div>
+          <h3>Distribución, replicación y failover (sin DB)</h3>
+        </div>
+        <ul>
+          <li>• Nodos simétricos sin master: cualquier nodo acepta cualquier request; un registro global [P] resuelve el PID del vuelo y el mensaje viaja por Erlang distribuido sin que la API se entere.</li>
+          <li>• Cada FlightServer replica a R=3 nodos vía hash ring y confirma la compra sólo con mayoría (primario + 1 réplica): toda compra confirmada existe en al menos dos nodos.</li>
+          <li>• Failover [P]: al caerse un nodo, algo tiene que revivir el vuelo en otro (el rol del supervisor, pero distribuido); el init recupera la versión máxima de las réplicas, incrementa la época y re-replica antes de atender.</li>
+          <li>• Épocas (fencing) + idempotencia (request_id): un primario viejo o duplicado no junta mayoría, se cae y se recupera (let it crash). La consistencia no depende de [P].</li>
+          <li>• Alertas replicadas con DeltaCrdt en todos los nodos: siempre disponibles, convergen en milisegundos.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot amber"></div>
+          <h3>CAP, escalabilidad y monitoreo</h3>
+        </div>
+        <ul>
+          <li>• CAP por tipo de dato: CP para asientos y compras (no vender dos veces es el invariante del negocio), AP para alertas y notificaciones.</li>
+          <li>• Telemetry → Prometheus + Grafana (y LiveDashboard): p95/p99 por endpoint, mailbox máximo de FlightServers (mide contención directa), vuelos con menos de R réplicas, nodos del cluster.</li>
+          <li>• Escalar = docker compose up -d --scale app=N+1: el nodo se conecta, el mecanismo de ubicación [P] le reasigna vuelos y éstos recuperan estado desde las réplicas. Quitar: de a uno, sólo sin réplicas faltantes.</li>
+          <li>• Pruebas: unitarias + de propiedades (StreamData), multi-nodo, caos (docker kill bajo carga) y carga (vuelo de 180 asientos, 5.000 usuarios, p95).</li>
+          <li>• Defensa: un solo nodo BEAM ya da toda la concurrencia necesaria; los nodos extra compran supervivencia y capacidad, no paralelismo.</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">Levantar Vuelo · TP IASC 2C2026 · check intermedio · [P] = mecanismo pendiente de la materia (supervisión/registro distribuido); la garantía de consistencia la dan quorum + épocas</p>
+  </div>
+</body>
+</html>
